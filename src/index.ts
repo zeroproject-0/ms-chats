@@ -1,56 +1,17 @@
+import { randomUUID } from 'crypto';
 import 'dotenv/config';
 
-import http from 'http';
-import { Server } from 'socket.io';
+import { connectDB } from './db';
+import { InMemorySessionStore, SessionStore } from './sessionStore';
+import { httpServer, io } from './io';
+
+connectDB();
+const sessionStore: SessionStore = new InMemorySessionStore();
 
 const { PORT } = <{ [key: string]: string }>process.env;
 
-interface User {
-	id: string;
-	name: string;
-	nickname: string;
-	email: string;
-	avatar: string;
-}
-
-interface SocketData {
-	token: string;
-	user: User;
-}
-
-interface ServerToClientEvents {
-	noArg: () => void;
-	basicEmit: (a: number, b: string, c: Buffer) => void;
-	withAck: (d: string, callback: (e: number) => void) => void;
-	foo: (x: string) => void;
-}
-
-interface ClientToServerEvents {
-	users: (users: { id: string; user: string }[]) => void;
-	user_connected: (users: { id: string; user: string }) => void;
-	foo: (x: any) => void;
-}
-
-interface InterServerEvents {
-	ping: () => void;
-	disconnect: (socket: any) => void;
-}
-
-const httpServer = http.createServer();
-const io = new Server<
-	ServerToClientEvents,
-	ClientToServerEvents,
-	InterServerEvents,
-	SocketData
->(httpServer, {
-	cors: {
-		origin: 'http://localhost:5173',
-		credentials: true,
-	},
-});
-
 io.use(async (socket, next) => {
-	const token: string = socket.handshake.auth.token;
+	const { token, sessionID } = socket.handshake.auth;
 
 	if (!token) return next(new Error('authentication error'));
 
@@ -64,33 +25,102 @@ io.use(async (socket, next) => {
 
 	if (!isValid.ok) return next(new Error('authentication error'));
 
+	if (sessionID) {
+		const session = sessionStore.findSession(sessionID);
+		if (session) {
+			socket.data.sessionID = sessionID;
+			socket.data.user = session.user;
+			return next();
+		}
+	}
+
 	const user = await isValid.json();
-	socket.data.token = token;
 	socket.data.user = user.data;
+	socket.data.sessionID = randomUUID();
 
 	return next();
 });
 
+interface Message {
+	content: string;
+	fromSelf: boolean;
+}
+
+interface User {
+	userID: string;
+	messages: Message[];
+	hasNewMessages: boolean;
+	socketID: string;
+}
+
 io.on('connection', (socket) => {
-	const users: { id: string; user: string }[] = [];
+	const users: User[] = [];
 
 	for (let [id, socket] of io.of('/').sockets) {
 		users.push({
-			id,
-			user: `${socket.data.user?.id as string}-${socket.data.user?.name}`,
-		});
+			socketID: socket.id,
+			userID: socket.data.user?.id as string,
+			messages: Array<Message>(),
+			hasNewMessages: false,
+		} as User);
 	}
 
+	console.log('Emitted users ', users);
 	socket.emit('users', users);
 
-	socket.broadcast.emit('user_connected', {
-		id: socket.id,
-		user: `${socket.data.user?.id as string}-${socket.data.user?.name}`,
+	const user_connected = {
+		socketID: socket.id,
+		userID: socket.data.user?.id as string,
+		messages: Array<Message>(),
+		hasNewMessages: false,
+	} as User;
+
+	console.log('Emitted user connected ', user_connected);
+	socket.broadcast.emit('user_connected', user_connected);
+
+	const session = {
+		sessionID: socket.data.sessionID,
+		userID: socket.data.user?.id,
+		socketID: socket.id,
+	};
+
+	console.log('Emitted session ', session);
+	socket.emit('session', session);
+
+	console.log('Joined room ', socket.data.user?.id);
+	socket.join(socket.data.user?.id as string);
+
+	socket.on('private_message', ({ content, to }) => {
+		console.log('private_message', {
+			content,
+			to,
+			userID: socket.data.user?.id,
+		});
+		socket
+			.to(to)
+			.to(socket.data.user?.id as string)
+			.emit('private_message', {
+				content,
+				from: socket.data.user?.id,
+				to,
+			});
 	});
 
-	socket.on('foo', (x) => {
-		console.log(x);
-		socket.emit('foo', x);
+	socket.on('disconnect', async () => {
+		const matchingSockets = await io
+			.in(socket.data.user?.id as string)
+			.fetchSockets();
+		const isDisconnected = matchingSockets.length === 0;
+		console.log('isDisconnected', isDisconnected);
+
+		if (isDisconnected) {
+			socket.broadcast.emit('user_disconnected', socket.data.user?.id);
+			sessionStore.saveSession(socket.data.sessionID as string, {
+				userID: socket.data.user?.id,
+				user: socket.data.user,
+				connected: false,
+			});
+		}
 	});
 
 	socket.onAny((event, ...args) => {
