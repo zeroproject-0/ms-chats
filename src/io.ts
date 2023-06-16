@@ -1,35 +1,51 @@
 import http from 'http';
 import { Server } from 'socket.io';
 
-interface User {
-	id: string;
-	name: string;
-	nickname: string;
-	email: string;
-	avatar: string;
+interface SocketData {
+	userID: string;
+	sessionID: string;
 }
 
-interface SocketData {
-	token: string;
-	user: User;
-	sessionID: string;
+export interface User {
+	_id: string;
+	email: string;
+	name: string;
+	nickname: string;
+	avatar: string;
+	lastname: string;
+	contacts: User[];
+	state: boolean;
+}
+
+export interface MessageBase {
+	content: string;
+	from: string;
+	to: string;
+}
+
+export interface MessageToSend extends MessageBase {
+	_id: string;
+	author: User;
+	createdAt?: Date;
 }
 
 interface ServerToClientEvents {
 	noArg: () => void;
 	basicEmit: (a: number, b: string, c: Buffer) => void;
 	withAck: (d: string, callback: (e: number) => void) => void;
-	foo: (x: string) => void;
-	private_message: (x: any) => void;
+
+	private_message(x: any): void;
+	session: (x: any) => void;
+	chats(chats: any): void;
+	chat_created(group: any): void;
+
+	chat_joined(chatId: string): void;
 }
 
 interface ClientToServerEvents {
-	users: (users: any) => void;
-	user_connected: (users: any) => void;
-	session: (x: any) => void;
-	private_message: (x: any) => void;
-	user_disconnected: (x: any) => void;
-	foo: (x: any) => void;
+	private_message: (x: MessageBase) => void;
+	create_chat({}: { usersIds: string[]; isPrivate: boolean }): void;
+	join_chat(chatId: string): void;
 }
 
 interface InterServerEvents {
@@ -40,8 +56,8 @@ interface InterServerEvents {
 export const httpServer = http.createServer();
 
 export const io = new Server<
-	ServerToClientEvents,
 	ClientToServerEvents,
+	ServerToClientEvents,
 	InterServerEvents,
 	SocketData
 >(httpServer, {

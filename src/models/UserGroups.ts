@@ -1,16 +1,20 @@
 import { Schema, model } from 'mongoose';
 
 interface IUserGroups {
-	userID: String;
+	userID: Schema.Types.ObjectId;
 	groups: Schema.Types.ObjectId[];
 }
 
 const UserGroupsSchema = new Schema<IUserGroups>({
-	userID: { type: String, required: true },
+	userID: {
+		type: Schema.Types.ObjectId,
+		ref: 'User',
+		unique: true,
+		required: true,
+	},
 	groups: {
 		type: [Schema.Types.ObjectId],
 		ref: 'Group',
-		required: true,
 		default: [],
 	},
 });

@@ -3,7 +3,12 @@ import 'dotenv/config';
 
 import { connectDB } from './db';
 import { InMemorySessionStore, SessionStore } from './sessionStore';
-import { httpServer, io } from './io';
+import { User, httpServer, io } from './io';
+import { Message } from './models/Message';
+import { Group } from './models/Group';
+import { User as UserDB } from './models/User';
+import mongoose, { Query, Schema } from 'mongoose';
+import { create } from 'domain';
 
 connectDB();
 const sessionStore: SessionStore = new InMemorySessionStore();
@@ -29,98 +34,119 @@ io.use(async (socket, next) => {
 		const session = sessionStore.findSession(sessionID);
 		if (session) {
 			socket.data.sessionID = sessionID;
-			socket.data.user = session.user;
+			socket.data.userID = session.userID;
 			return next();
 		}
 	}
 
 	const user = await isValid.json();
-	socket.data.user = user.data;
+	socket.data.userID = user.data._id;
 	socket.data.sessionID = randomUUID();
 
 	return next();
 });
 
-interface Message {
-	content: string;
-	fromSelf: boolean;
-}
-
-interface User {
-	userID: string;
-	messages: Message[];
-	hasNewMessages: boolean;
-	socketID: string;
-}
+UserDB.find().then((users) => {});
 
 io.on('connection', (socket) => {
-	const users: User[] = [];
-
-	for (let [id, socket] of io.of('/').sockets) {
-		users.push({
-			socketID: socket.id,
-			userID: socket.data.user?.id as string,
-			messages: Array<Message>(),
-			hasNewMessages: false,
-		} as User);
-	}
-
-	console.log('Emitted users ', users);
-	socket.emit('users', users);
-
-	const user_connected = {
-		socketID: socket.id,
-		userID: socket.data.user?.id as string,
-		messages: Array<Message>(),
-		hasNewMessages: false,
-	} as User;
-
-	console.log('Emitted user connected ', user_connected);
-	socket.broadcast.emit('user_connected', user_connected);
+	Group.find()
+		.populate('members.user')
+		.populate('messages')
+		.exec()
+		.then((groups) => {
+			const filteredArray = groups.filter((group) => {
+				return group.members.some((member) => {
+					return (
+						(member.user as unknown as User)._id.toString() ===
+						socket.data.userID
+					);
+				});
+			});
+			socket.join(filteredArray.map((group) => group._id.toString()));
+			socket.emit('chats', filteredArray);
+		})
+		.catch((error) => {
+			console.log('error', { error });
+		});
 
 	const session = {
 		sessionID: socket.data.sessionID,
-		userID: socket.data.user?.id,
+		userID: socket.data.userID,
 		socketID: socket.id,
 	};
 
-	console.log('Emitted session ', session);
 	socket.emit('session', session);
 
-	console.log('Joined room ', socket.data.user?.id);
-	socket.join(socket.data.user?.id as string);
+	socket.join(socket.data.userID!);
 
-	socket.on('private_message', ({ content, to }) => {
-		console.log('private_message', {
-			content,
-			to,
-			userID: socket.data.user?.id,
-		});
-		socket
-			.to(to)
-			.to(socket.data.user?.id as string)
-			.emit('private_message', {
-				content,
-				from: socket.data.user?.id,
-				to,
+	socket.on('create_chat', async ({ usersIds, isPrivate }) => {
+		// //TODO: Send errors to user
+		if (usersIds.length < 1) return;
+
+		// //TODO: Check if group already exists
+
+		if (isPrivate) {
+			const users = usersIds.map((user: string) => ({ user, isAdmin: false }));
+			users.push({ user: socket.data.userID!, isAdmin: true });
+
+			const group = await Group.create({
+				name: `${socket.data.userID!}`,
+				isPrivate: true,
+				members: users,
+				description: `${usersIds[0]}`,
+				messages: [],
 			});
+
+			const createdGroup = await group.save();
+
+			await (await createdGroup.populate('members.user')).populate('messages');
+
+			socket.emit('chat_created', createdGroup);
+			socket.to(usersIds[0]).emit('chat_created', createdGroup);
+		}
+	});
+
+	socket.on('join_chat', async (chatId) => {
+		await socket.join(chatId);
+
+		socket.emit('chat_joined', chatId);
+	});
+
+	socket.on('private_message', async (message) => {
+		try {
+			const newMessage = await Message.create({
+				from: message.from,
+				to: message.to,
+				content: message.content,
+			});
+
+			const createdMessage = await newMessage.save();
+
+			const group = await Group.findOne({ _id: message.to }).exec();
+			group?.messages.push(
+				createdMessage._id as unknown as Schema.Types.ObjectId
+			);
+
+			await group?.save();
+
+			socket.emit('private_message', createdMessage);
+			socket.to(message.to).emit('private_message', createdMessage);
+		} catch (error) {
+			console.log('error', error);
+		}
 	});
 
 	socket.on('disconnect', async () => {
-		const matchingSockets = await io
-			.in(socket.data.user?.id as string)
-			.fetchSockets();
+		const matchingSockets = await io.in(socket.data.userID!).fetchSockets();
 		const isDisconnected = matchingSockets.length === 0;
-		console.log('isDisconnected', isDisconnected);
 
-		if (isDisconnected) {
-			socket.broadcast.emit('user_disconnected', socket.data.user?.id);
-			sessionStore.saveSession(socket.data.sessionID as string, {
-				userID: socket.data.user?.id,
-				user: socket.data.user,
-				connected: false,
-			});
-		}
+		// if (isDisconnected) {
+		// 	socket.broadcast.emit('user_disconnected', socket.data.user?.id);
+		// 	sessionStore.saveSession(socket.data.sessionID as string, {
+		// 		userID: socket.data.userID!,
+		// 		connected: false,
+		// 	});
+		// }
 	});
 
 	socket.onAny((event, ...args) => {
