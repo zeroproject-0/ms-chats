@@ -7,8 +7,7 @@ import { User, httpServer, io } from './io';
 import { Message } from './models/Message';
 import { Group } from './models/Group';
 import { User as UserDB } from './models/User';
-import mongoose, { Query, Schema } from 'mongoose';
-import { create } from 'domain';
+import { Schema } from 'mongoose';
 
 connectDB();
 const sessionStore: SessionStore = new InMemorySessionStore();
@@ -20,13 +19,16 @@ io.use(async (socket, next) => {
 
 	if (!token) return next(new Error('authentication error'));
 
-	const isValid = await fetch('http://localhost:5001/v1/auth/validate', {
-		method: 'GET',
-		headers: {
-			'Content-Type': 'application/json',
-			'auth-token': token,
-		},
-	});
+	const isValid = await fetch(
+		`${process.env.USER_SERVICE_URI}/v1/auth/validate`,
+		{
+			method: 'GET',
+			headers: {
+				'Content-Type': 'application/json',
+				'auth-token': token,
+			},
+		}
+	);
 
 	if (!isValid.ok) return next(new Error('authentication error'));
 

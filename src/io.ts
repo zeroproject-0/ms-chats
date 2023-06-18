@@ -55,6 +55,11 @@ interface InterServerEvents {
 
 export const httpServer = http.createServer();
 
+const cors =
+	process.env.ENV === 'dev'
+		? ['http://localhost:5173', 'http://localhost:4173']
+		: 'https://chat.zeroproject.dev';
+
 export const io = new Server<
 	ClientToServerEvents,
 	ServerToClientEvents,
@@ -62,7 +67,7 @@ export const io = new Server<
 	SocketData
 >(httpServer, {
 	cors: {
-		origin: ['http://localhost:5173', 'http://localhost:4173'],
+		origin: cors,
 		credentials: true,
 	},
 });
