@@ -1,5 +1,27 @@
 import http from 'http';
 import { Server } from 'socket.io';
+import express, { json } from 'express';
+import { AuditoriaServicio } from './models/AuditoriaServicio';
+import cors from 'cors';
+
+export interface IAuditoriaServicio {
+	metodo: string;
+	servicio: string;
+	peticion: string;
+	respuesta: string;
+}
+
+export async function addAuditoria(auditoria: IAuditoriaServicio) {
+	const auditoriaServicio = new AuditoriaServicio(auditoria);
+
+	await auditoriaServicio.save();
+
+	io.fetchSockets().then((sockets) => {
+		sockets.forEach((socket) => {
+			socket.emit('log', auditoriaServicio);
+		});
+	});
+}
 
 interface SocketData {
 	userID: string;
@@ -40,6 +62,8 @@ interface ServerToClientEvents {
 	chat_created(group: any): void;
 
 	chat_joined(chatId: string): void;
+
+	log(log: any): void;
 }
 
 interface ClientToServerEvents {
@@ -53,9 +77,17 @@ interface InterServerEvents {
 	disconnect: (socket: any) => void;
 }
 
-export const httpServer = http.createServer();
+export const app = express();
+app.use(json());
+app.use(
+	cors({
+		origin: '*',
+		methods: '*',
+	})
+);
+export const httpServer = http.createServer(app);
 
-const cors =
+const corsOrigins =
 	process.env.ENV === 'dev'
 		? ['http://localhost:5173', 'http://localhost:4173']
 		: 'https://chat.zeroproject.dev';
@@ -67,7 +99,26 @@ export const io = new Server<
 	SocketData
 >(httpServer, {
 	cors: {
-		origin: cors,
+		origin: corsOrigins,
 		credentials: true,
 	},
+});
+
+app.post('/log', async (req, res) => {
+	let { metodo, servicio, peticion, respuesta } = req.body;
+
+	metodo = JSON.stringify(metodo);
+	servicio = JSON.stringify(servicio);
+	peticion = JSON.stringify(peticion);
+	respuesta = JSON.stringify(respuesta);
+
+	await addAuditoria({ metodo, servicio, peticion, respuesta });
+
+	res.send('OK');
+});
+
+app.get('/log', async (req, res) => {
+	const logs = await AuditoriaServicio.find();
+
+	res.send(logs);
 });
