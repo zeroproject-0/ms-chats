@@ -85,17 +85,15 @@ io.on('connection', (socket) => {
 		// //TODO: Send errors to user
 		if (usersIds.length < 1) return;
 
-		// //TODO: Check if group already exists
-
 		if (isPrivate) {
 			const users = usersIds.map((user: string) => ({ user, isAdmin: false }));
 			users.push({ user: socket.data.userID!, isAdmin: true });
 
 			const group = await Group.create({
-				name: `${socket.data.userID!}`,
+				name: `${users[0].user}`,
 				isPrivate: true,
 				members: users,
-				description: `${usersIds[0]}`,
+				description: `${users[1].user}`,
 				messages: [],
 			});
 
